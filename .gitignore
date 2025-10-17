@@ -1,0 +1,3 @@
+__pycache__/
+taming/modules/autoencoder/lpips/vgg.pth
+*.egg-info/
