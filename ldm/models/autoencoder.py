@@ -291,6 +291,7 @@ class AutoencoderKL(pl.LightningModule):
                  image_key="image",
                  colorize_nlabels=None,
                  monitor=None,
+                 grad_accum_steps: int = 1
                  ):
         super().__init__()
         self.image_key = image_key
@@ -308,6 +309,8 @@ class AutoencoderKL(pl.LightningModule):
             self.monitor = monitor
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+        self.automatic_optimization=False
+        self.grad_accum_steps = int(grad_accum_steps)
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -347,6 +350,7 @@ class AutoencoderKL(pl.LightningModule):
         x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format).float()
         return x
 
+    """
     def training_step(self, batch, batch_idx, optimizer_idx):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior = self(inputs)
@@ -367,6 +371,46 @@ class AutoencoderKL(pl.LightningModule):
             self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
             self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
             return discloss
+    """
+
+    def training_step(self, batch, batch_idx):
+        inputs = self.get_input(batch, self.image_key)
+        opt_ae, opt_disc = self.optimizers()
+
+        # ---- AE / generator step ----
+        self.toggle_optimizer(opt_ae)
+        recon, posterior = self(inputs)
+        opt_ae.zero_grad(set_to_none=True)
+        aeloss, log_dict_ae = self.loss(
+            inputs, recon, posterior, optimizer_idx=0, global_step=self.global_step,
+            last_layer=self.get_last_layer(), split="train"
+        )
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(aeloss)
+        accumulate = self.grad_accum_steps
+        #opt_ae.step()
+        if (batch_idx + 1) % accumulate == 0:
+            opt_ae.step(); opt_ae.zero_grad(set_to_none=True)
+        self.untoggle_optimizer(opt_ae)
+
+        # ---- Discriminator step (fresh forward) ----
+        self.toggle_optimizer(opt_disc)
+        recon, posterior = self(inputs)
+        opt_disc.zero_grad(set_to_none=True)
+        discloss, log_dict_disc = self.loss(
+            inputs, recon, posterior, optimizer_idx=1, global_step=self.global_step,
+            last_layer=self.get_last_layer(), split="train"
+        )
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(discloss)
+        #opt_disc.step()
+        if (batch_idx + 1) % accumulate == 0:
+            opt_disc.step(); opt_disc.zero_grad(set_to_none=True)
+        self.untoggle_optimizer(opt_disc)
+
+        return
 
     def validation_step(self, batch, batch_idx):
         inputs = self.get_input(batch, self.image_key)

@@ -383,11 +383,11 @@ class ImageLogger(Callback):
             return True
         return False
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
             self.log_img(pl_module, batch, batch_idx, split="train")
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not self.disabled and pl_module.global_step > 0:
             self.log_img(pl_module, batch, batch_idx, split="val")
         if hasattr(pl_module, 'calibrate_grad_norm'):
@@ -398,19 +398,24 @@ class ImageLogger(Callback):
 class CUDACallback(Callback):
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
     def on_train_epoch_start(self, trainer, pl_module):
-        # Reset the memory use counter
-        torch.cuda.reset_peak_memory_stats(trainer.root_gpu)
-        torch.cuda.synchronize(trainer.root_gpu)
+        device = getattr(trainer.strategy, "root_device", pl_module.device)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+            torch.cuda.synchronize(device)
         self.start_time = time.time()
 
     def on_train_epoch_end(self, trainer, pl_module, outputs):
-        torch.cuda.synchronize(trainer.root_gpu)
-        max_memory = torch.cuda.max_memory_allocated(trainer.root_gpu) / 2 ** 20
+        device = getattr(trainer.strategy, "root_device", pl_module.device)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+            max_memory = torch.cuda.max_memory_allocated(device) / 2 ** 20
+        else:
+            max_memory = 0.0
         epoch_time = time.time() - self.start_time
 
         try:
-            max_memory = trainer.training_type_plugin.reduce(max_memory)
-            epoch_time = trainer.training_type_plugin.reduce(epoch_time)
+            max_memory = trainer.strategy.reduce(max_memory)
+            epoch_time = trainer.strategy.reduce(epoch_time)
 
             rank_zero_info(f"Average Epoch time: {epoch_time:.2f} seconds")
             rank_zero_info(f"Average Peak memory {max_memory:.2f}MiB")
@@ -679,17 +684,14 @@ if __name__ == "__main__":
             ngpu = len(dev) if isinstance(dev, (list, tuple)) else int(dev)
         else:
             ngpu = 1
-        if 'accumulate_grad_batches' in lightning_config.trainer:
-            accumulate_grad_batches = lightning_config.trainer.accumulate_grad_batches
-        else:
-            accumulate_grad_batches = 1
-        print(f"accumulate_grad_batches = {accumulate_grad_batches}")
-        lightning_config.trainer.accumulate_grad_batches = accumulate_grad_batches
+        #lightning_config.trainer.accumulate_grad_batches = 1
+        manual_accumulate = getattr(model, "grad_accum_steps", 1)
+        print(f"manual_grad_accum_steps = {manual_accumulate}")
         if opt.scale_lr:
-            model.learning_rate = accumulate_grad_batches * ngpu * bs * base_lr
+            model.learning_rate = manual_accumulate * ngpu * bs * base_lr
             print(
                 "Setting learning rate to {:.2e} = {} (accumulate_grad_batches) * {} (num_gpus) * {} (batchsize) * {:.2e} (base_lr)".format(
-                    model.learning_rate, accumulate_grad_batches, ngpu, bs, base_lr))
+                    model.learning_rate, manual_accumulate, ngpu, bs, base_lr))
         else:
             model.learning_rate = base_lr
             print("++++ NOT USING LR SCALING ++++")
