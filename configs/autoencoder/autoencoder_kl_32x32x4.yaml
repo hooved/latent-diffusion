@@ -51,3 +51,8 @@ lightning:
   trainer:
     benchmark: True
     accumulate_grad_batches: 2
+  logger:
+    target: pytorch_lightning.loggers.CSVLogger
+    params:
+      save_dir: logs
+      name: autoencoder

@@ -14,7 +14,7 @@ from PIL import Image
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
-from pytorch_lightning.utilities.distributed import rank_zero_only
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
@@ -124,10 +124,8 @@ def get_parser(**parser_kwargs):
 
 
 def nondefault_trainer_args(opt):
-    parser = argparse.ArgumentParser()
-    parser = Trainer.add_argparse_args(parser)
-    args = parser.parse_args([])
-    return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
+    defaults = dict(devices=None, accelerator=None, strategy=None)
+    return sorted(k for k, v in defaults.items() if getattr(opt, k, None) != v)
 
 
 class WrappedDataset(Dataset):
@@ -295,7 +293,7 @@ class ImageLogger(Callback):
         self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
-            pl.loggers.TestTubeLogger: self._testtube,
+            getattr(pl.loggers, "CSVLogger", object): self._noop,
         }
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
@@ -316,6 +314,11 @@ class ImageLogger(Callback):
             pl_module.logger.experiment.add_image(
                 tag, grid,
                 global_step=pl_module.global_step)
+
+    @rank_zero_only
+    def _noop(self, *args, **kwargs):
+        # Intentionally do nothing (when using CSVLogger).
+        return
 
     @rank_zero_only
     def log_local(self, save_dir, split, images,
@@ -465,7 +468,10 @@ if __name__ == "__main__":
     sys.path.append(os.getcwd())
 
     parser = get_parser()
-    parser = Trainer.add_argparse_args(parser)
+    parser.add_argument("--devices", type=str, default=None)      # e.g. "0,1" or "1"
+    parser.add_argument("--accelerator", type=str, default=None)  # "gpu"/"cpu"
+    parser.add_argument("--strategy", type=str, default=None)     # "ddp", etc.
+    #parser = Trainer.add_argparse_args(parser)
 
     opt, unknown = parser.parse_known_args()
     if opt.name and opt.resume:
@@ -518,18 +524,14 @@ if __name__ == "__main__":
         # merge trainer cli with config
         trainer_config = lightning_config.get("trainer", OmegaConf.create())
         # default to ddp
-        trainer_config["accelerator"] = "ddp"
+        trainer_config.setdefault("accelerator", "gpu")
+        trainer_config.setdefault("strategy", "ddp")
         for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
-        if not "gpus" in trainer_config:
-            del trainer_config["accelerator"]
-            cpu = True
-        else:
-            gpuinfo = trainer_config["gpus"]
-            print(f"Running on GPUs {gpuinfo}")
-            cpu = False
-        trainer_opt = argparse.Namespace(**trainer_config)
-        lightning_config.trainer = trainer_config
+        if isinstance(trainer_config.get("devices"), str):
+            trainer_config["devices"] = [int(x) for x in trainer_config["devices"].split(",") if x]
+        cpu = trainer_config.get("accelerator") == "cpu" or not trainer_config.get("devices")
+        lightning_config.trainer = trainer_config  # keep for later reads
 
         # model
         model = instantiate_from_config(config.model)
@@ -656,7 +658,7 @@ if __name__ == "__main__":
 
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
 
-        trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
+        trainer = Trainer(**trainer_config, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
         # data
@@ -673,7 +675,9 @@ if __name__ == "__main__":
         # configure learning rate
         bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
         if not cpu:
-            ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
+            #ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
+            dev = lightning_config.trainer.get("devices", 1)
+            ngpu = len(dev) if isinstance(dev, (list, tuple)) else int(dev)
         else:
             ngpu = 1
         if 'accumulate_grad_batches' in lightning_config.trainer:
@@ -714,14 +718,15 @@ if __name__ == "__main__":
         signal.signal(signal.SIGUSR2, divein)
 
         # run
+        ckpt_path = getattr(opt, "resume_from_checkpoint", None) or None
         if opt.train:
             try:
-                trainer.fit(model, data)
+                trainer.fit(model, datamodule=data, ckpt_path=ckpt_path)
             except Exception:
                 melk()
                 raise
         if not opt.no_test and not trainer.interrupted:
-            trainer.test(model, data)
+            trainer.test(model, datamodule=data)
     except Exception:
         if opt.debug and trainer.global_rank == 0:
             try:
