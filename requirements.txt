@@ -7,3 +7,6 @@ pillow
 einops
 requests
 tqdm
+opencv-python
+albumentations
+scikit-image
