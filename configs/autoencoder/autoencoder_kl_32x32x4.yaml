@@ -34,11 +34,15 @@ data:
       params:
         size: 256
         degradation: pil_nearest
+        config:
+          sub_indices: 646
     validation:
       target: ldm.data.imagenet.ImageNetSRValidation
       params:
         size: 256
         degradation: pil_nearest
+        config:
+          sub_indices: 646
 
 lightning:
   callbacks:

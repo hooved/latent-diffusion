@@ -19,7 +19,7 @@ from ldm.modules.image_degradation import degradation_fn_bsr, degradation_fn_bsr
 
 def synset2idx(path_to_yaml="data/index_synset.yaml"):
     with open(path_to_yaml) as f:
-        di2s = yaml.load(f)
+        di2s = yaml.safe_load(f)
     return dict((v,k) for k,v in di2s.items())
 
 
@@ -51,7 +51,8 @@ class ImageNetBase(Dataset):
         ])
         relpaths = [rpath for rpath in relpaths if not rpath.split("/")[-1] in ignore]
         if "sub_indices" in self.config:
-            indices = str_to_indices(self.config["sub_indices"])
+            indices = self.config["sub_indices"]
+            indices = [indices] if isinstance(indices, int) else str_to_indices(self.config["sub_indices"])
             synsets = give_synsets_from_indices(indices, path_to_yaml=self.idx2syn)  # returns a list of strings
             self.synset2idx = synset2idx(path_to_yaml=self.idx2syn)
             files = []
@@ -272,7 +273,7 @@ class ImageNetValidation(ImageNetBase):
 class ImageNetSR(Dataset):
     def __init__(self, size=None,
                  degradation=None, downscale_f=4, min_crop_f=0.5, max_crop_f=1.,
-                 random_crop=True):
+                 random_crop=True, config=None):
         """
         Imagenet Superresolution Dataloader
         Performs following ops in order:
@@ -289,6 +290,7 @@ class ImageNetSR(Dataset):
         :param data_root:
         :param random_crop:
         """
+        self.config = OmegaConf.to_container(config) if (config is not None and not isinstance(config, dict)) else config
         self.base = self.get_base()
         assert size
         assert (size / downscale_f).is_integer()
@@ -379,8 +381,8 @@ class ImageNetSRTrain(ImageNetSR):
     def get_base(self):
         with open("data/imagenet_train_hr_indices.p", "rb") as f:
             indices = pickle.load(f)
-        dset = ImageNetTrain(process_images=False,)
-        return Subset(dset, indices)
+        dset = ImageNetTrain(process_images=False, config=self.config,)
+        return dset if self.config else Subset(dset, indices)
 
 
 class ImageNetSRValidation(ImageNetSR):
@@ -390,5 +392,5 @@ class ImageNetSRValidation(ImageNetSR):
     def get_base(self):
         with open("data/imagenet_val_hr_indices.p", "rb") as f:
             indices = pickle.load(f)
-        dset = ImageNetValidation(process_images=False,)
-        return Subset(dset, indices)
+        dset = ImageNetValidation(process_images=False, config=self.config)
+        return dset if self.config else Subset(dset, indices)
