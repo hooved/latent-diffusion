@@ -376,38 +376,36 @@ class AutoencoderKL(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         inputs = self.get_input(batch, self.image_key)
         opt_ae, opt_disc = self.optimizers()
+        update_weights = (batch_idx + 1) % self.grad_accum_steps == 0
 
-        # ---- AE / generator step ----
         self.toggle_optimizer(opt_ae)
         recon, posterior = self(inputs)
-        opt_ae.zero_grad(set_to_none=True)
         aeloss, log_dict_ae = self.loss(
             inputs, recon, posterior, optimizer_idx=0, global_step=self.global_step,
             last_layer=self.get_last_layer(), split="train"
         )
         self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
-        self.manual_backward(aeloss)
-        accumulate = self.grad_accum_steps
-        #opt_ae.step()
-        if (batch_idx + 1) % accumulate == 0:
-            opt_ae.step(); opt_ae.zero_grad(set_to_none=True)
+        self.manual_backward(aeloss / self.grad_accum_steps)
+
+        if update_weights:
+            opt_ae.step()
+            opt_ae.zero_grad(set_to_none=True)
         self.untoggle_optimizer(opt_ae)
 
-        # ---- Discriminator step (fresh forward) ----
         self.toggle_optimizer(opt_disc)
         recon, posterior = self(inputs)
-        opt_disc.zero_grad(set_to_none=True)
         discloss, log_dict_disc = self.loss(
             inputs, recon, posterior, optimizer_idx=1, global_step=self.global_step,
             last_layer=self.get_last_layer(), split="train"
         )
         self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
-        self.manual_backward(discloss)
-        #opt_disc.step()
-        if (batch_idx + 1) % accumulate == 0:
-            opt_disc.step(); opt_disc.zero_grad(set_to_none=True)
+        self.manual_backward(discloss / self.grad_accum_steps)
+
+        if update_weights:
+            opt_disc.step()
+            opt_disc.zero_grad(set_to_none=True)
         self.untoggle_optimizer(opt_disc)
 
         return
@@ -435,6 +433,8 @@ class AutoencoderKL(pl.LightningModule):
                                   lr=lr, betas=(0.5, 0.9))
         opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
                                     lr=lr, betas=(0.5, 0.9))
+        # TODO this was set as a parameter but isn't ever stepped; should we include it with one of the optimizers' params?
+        self.loss.logvar.requires_grad = False
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self):

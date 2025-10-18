@@ -530,7 +530,8 @@ if __name__ == "__main__":
         trainer_config = lightning_config.get("trainer", OmegaConf.create())
         # default to ddp
         trainer_config.setdefault("accelerator", "gpu")
-        trainer_config.setdefault("strategy", "ddp")
+        #trainer_config.setdefault("strategy", "ddp")
+        trainer_config.setdefault("strategy", "ddp_find_unused_parameters_true")
         for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
         if isinstance(trainer_config.get("devices"), str):
@@ -685,13 +686,13 @@ if __name__ == "__main__":
         else:
             ngpu = 1
         #lightning_config.trainer.accumulate_grad_batches = 1
-        manual_accumulate = getattr(model, "grad_accum_steps", 1)
-        print(f"manual_grad_accum_steps = {manual_accumulate}")
+        grad_accum_steps = getattr(model, "grad_accum_steps", 1)
+        print(f"manual_grad_accum_steps = {grad_accum_steps}")
         if opt.scale_lr:
-            model.learning_rate = manual_accumulate * ngpu * bs * base_lr
+            model.learning_rate = grad_accum_steps * ngpu * bs * base_lr
             print(
                 "Setting learning rate to {:.2e} = {} (accumulate_grad_batches) * {} (num_gpus) * {} (batchsize) * {:.2e} (base_lr)".format(
-                    model.learning_rate, manual_accumulate, ngpu, bs, base_lr))
+                    model.learning_rate, grad_accum_steps, ngpu, bs, base_lr))
         else:
             model.learning_rate = base_lr
             print("++++ NOT USING LR SCALING ++++")
