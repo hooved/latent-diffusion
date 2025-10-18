@@ -404,7 +404,7 @@ class CUDACallback(Callback):
             torch.cuda.synchronize(device)
         self.start_time = time.time()
 
-    def on_train_epoch_end(self, trainer, pl_module, outputs):
+    def on_train_epoch_end(self, trainer, pl_module):
         device = getattr(trainer.strategy, "root_device", pl_module.device)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
