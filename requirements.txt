@@ -1,4 +1,5 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
+# for training
 torch
 torchvision
 pytorch-lightning
@@ -10,3 +11,7 @@ tqdm
 opencv-python
 albumentations
 scikit-image
+
+# not needed for training; for running notebooks
+jupyterlab
+jupyterlab-vim
