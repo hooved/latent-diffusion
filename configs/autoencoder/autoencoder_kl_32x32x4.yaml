@@ -2,7 +2,7 @@ model:
   base_learning_rate: 4.5e-6
   target: ldm.models.autoencoder.AutoencoderKL
   params:
-    grad_accum_steps: 3
+    grad_accum_steps: 2
     monitor: "val/rec_loss"
     embed_dim: 4
     lossconfig:
@@ -27,7 +27,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 4 
+    batch_size: 6
+    num_workers: 6
     wrap: True
     train:
       target: ldm.data.imagenet.ImageNetSRTrain
@@ -47,14 +48,17 @@ data:
 lightning:
   callbacks:
     image_logger:
-      target: main.ImageLogger
-      params:
-        batch_frequency: 1000
-        max_images: 8
-        increase_log_steps: True
+      disabled: true
+      #target: main.ImageLogger
+      #params:
+        #batch_frequency: 1000
+        #max_images: 8
+        #increase_log_steps: True
 
   trainer:
     benchmark: True
+    check_val_every_n_epoch: 10
+    num_sanity_val_steps: 0
   logger:
     target: pytorch_lightning.loggers.CSVLogger
     params:
